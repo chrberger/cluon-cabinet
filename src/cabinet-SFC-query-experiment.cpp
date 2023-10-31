@@ -449,7 +449,7 @@ int32_t main(int32_t argc, char **argv) {
       //     //temp = i;
       //     // + ", " + duration_BF_primitive + ", " + duration_BF + ", " +  duration_SFC + ", "
       //     //  + detection_BF_primitive.size() + ", " + detection_BF.size() + ", " + detection_SFC.size() + ", "
-      //     //  +  false_negatives_BF.size() + ", " +  false_positives_BF.size() + ", " + false_negatives_SFC.size() + ", " + false_positives_SFC.size()+<< ", ";      
+      //     //  +  false_negatives_BF.size() + ", " +  false_positives_BF.size() + ", " + false_negatives_SFC.size() + ", " + false_positives_SFC.size()+<< ", ";     
           
       //     for(auto tempMan : maneuver) {
       //       resultDatei << ", " << tempMan->fenceBL.first << ", " << tempMan->fenceBL.second << ", "
