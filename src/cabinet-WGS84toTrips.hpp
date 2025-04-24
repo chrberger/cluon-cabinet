@@ -226,13 +226,11 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                 auto dbAll = lmdb::dbi::open(txndbAll, "all", MDB_CREATE);
                 dbAll.set_compare(txndbAll, &compareKeys);
 
-                auto txnWgs84 = lmdb::txn::begin(envout);
                 bool dbGeodeticWgs84SenderStamp_open = false;
-                auto dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txnWgs84, "txnWgs84tmp", MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
+                auto dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txndbAll, "txnWgs84tmp", MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
 
-                auto txnDTTS = lmdb::txn::begin(envout);
                 bool dbDataTypeSenderStamp_open = false;
-                auto dbDataTypeSenderStamp = lmdb::dbi::open(txnDTTS, "txnDTTStmp", MDB_CREATE);
+                auto dbDataTypeSenderStamp = lmdb::dbi::open(txndbAll, "txnDTTStmp", MDB_CREATE);
 
                 for (auto f : bufferedKeyValues) {
                   //std::cout << __LINE__ << ": " << i << "/" << bufferedKeyValues.size() << std::endl;
@@ -302,13 +300,13 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                               __value.mv_data = &_timeStamp;
 
                               if (!dbGeodeticWgs84SenderStamp_open) {
-                                dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txnWgs84, _shortKey.c_str(), MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
-                                dbGeodeticWgs84SenderStamp.set_compare(txnWgs84, &compareMortonKeys);
-                                lmdb::dbi_set_dupsort(txnWgs84, dbGeodeticWgs84SenderStamp.handle(), &compareKeys);
+                                dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txndbAll, _shortKey.c_str(), MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
+                                dbGeodeticWgs84SenderStamp.set_compare(txndbAll, &compareMortonKeys);
+                                lmdb::dbi_set_dupsort(txndbAll, dbGeodeticWgs84SenderStamp.handle(), &compareKeys);
                                 dbGeodeticWgs84SenderStamp_open = true;
                               }
 
-                              lmdb::dbi_put(txnWgs84, dbGeodeticWgs84SenderStamp.handle(), &__key, &__value, 0); 
+                              lmdb::dbi_put(txndbAll, dbGeodeticWgs84SenderStamp.handle(), &__key, &__value, 0); 
                             }
                           }
                         }
@@ -334,11 +332,11 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                     const std::string _shortKey{_dataType_senderStamp.str()};
 
                     if (!dbDataTypeSenderStamp_open) {
-                      dbDataTypeSenderStamp = lmdb::dbi::open(txnDTTS, _shortKey.c_str(), MDB_CREATE);
-                      dbDataTypeSenderStamp.set_compare(txnDTTS, &compareKeys);
+                      dbDataTypeSenderStamp = lmdb::dbi::open(txndbAll, _shortKey.c_str(), MDB_CREATE);
+                      dbDataTypeSenderStamp.set_compare(txndbAll, &compareKeys);
                       dbDataTypeSenderStamp_open = true;
                     }
-                    lmdb::dbi_put(txnDTTS, dbDataTypeSenderStamp.handle(), &__key, &__value, 0); 
+                    lmdb::dbi_put(txndbAll, dbDataTypeSenderStamp.handle(), &__key, &__value, 0); 
                   }
                 }
 
@@ -350,9 +348,8 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                   {
                     const std::string _shortKey{"trips"};
 
-                    auto txn = lmdb::txn::begin(envout);
-                    auto dbTrips = lmdb::dbi::open(txn, _shortKey.c_str(), MDB_CREATE);
-                    dbTrips.set_compare(txn, &compareKeys);
+                    auto dbTrips = lmdb::dbi::open(txndbAll, _shortKey.c_str(), MDB_CREATE);
+                    dbTrips.set_compare(txndbAll, &compareKeys);
                     {
                       // key is the cabinet::Key from the trip start.
                       MDB_val __key;
@@ -369,9 +366,8 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                       __value.mv_size = setKey(keyTripEnd, _value.data(), _value.capacity());
                       __value.mv_data = _value.data();
 
-                      lmdb::dbi_put(txn, dbTrips.handle(), &__key, &__value, 0);
+                      lmdb::dbi_put(txndbAll, dbTrips.handle(), &__key, &__value, 0);
                     }
-                    txn.commit();
                   }
 
 
@@ -399,9 +395,12 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                 }
                 kept += bufferedKeyValues.size();
 
+                // Drop the temporary tables.
+                dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txndbAll, "txnWgs84tmp", MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
+                dbGeodeticWgs84SenderStamp.drop(txndbAll, true);
+                dbDataTypeSenderStamp = lmdb::dbi::open(txndbAll, "txnDTTStmp", MDB_CREATE);
+                dbDataTypeSenderStamp.drop(txndbAll, true);
                 txndbAll.commit();
-                txnWgs84.commit();
-                txnDTTS.commit();
               }
               else {
                 // This trip does not meet the MIN_LEN/MAX_LEN criteria.
