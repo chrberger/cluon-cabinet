@@ -220,6 +220,20 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                 // 2.1 Store those values to the database.
                 std::cout << "Trip of length: " << (len/1000.0) << "km with " << bufferedKeyValues.size() << " entries." << std::endl;
                 uint32_t i = 0;
+
+                // Create transactions.
+                auto txndbAll = lmdb::txn::begin(envout);
+                auto dbAll = lmdb::dbi::open(txndbAll, "all", MDB_CREATE);
+                dbAll.set_compare(txndbAll, &compareKeys);
+
+                auto txnWgs84 = lmdb::txn::begin(envout);
+                bool dbGeodeticWgs84SenderStamp_open = false;
+                auto dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txnWgs84, "txnWgs84tmp", MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
+
+                auto txnDTTS = lmdb::txn::begin(envout);
+                bool dbDataTypeSenderStamp_open = false;
+                auto dbDataTypeSenderStamp = lmdb::dbi::open(txnDTTS, "txnDTTStmp", MDB_CREATE);
+
                 for (auto f : bufferedKeyValues) {
                   //std::cout << __LINE__ << ": " << i << "/" << bufferedKeyValues.size() << std::endl;
                   i++;
@@ -236,11 +250,7 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
 
                     {
                       // Store key/value in db "all".
-                      auto txn = lmdb::txn::begin(envout);
-                      auto dbAll = lmdb::dbi::open(txn, "all", MDB_CREATE);
-                      dbAll.set_compare(txn, &compareKeys);
-                      lmdb::dbi_put(txn, dbAll.handle(), &_key, &_value, 0); 
-                      txn.commit();
+                      lmdb::dbi_put(txndbAll, dbAll.handle(), &_key, &_value, 0); 
                     }
 
                     // 2.2 Compute the Morton codes if the current key contains a GPS location.
@@ -277,10 +287,6 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                             }
 
                             // Store data.
-                            auto txn = lmdb::txn::begin(envout);
-                            auto dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txn, _shortKey.c_str(), MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
-                            dbGeodeticWgs84SenderStamp.set_compare(txn, &compareMortonKeys);
-                            lmdb::dbi_set_dupsort(txn, dbGeodeticWgs84SenderStamp.handle(), &compareKeys);
                             {
                               // key is the morton code in network byte order
                               MDB_val __key;
@@ -295,9 +301,15 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                               __value.mv_size = sizeof(_timeStamp);
                               __value.mv_data = &_timeStamp;
 
-                              lmdb::dbi_put(txn, dbGeodeticWgs84SenderStamp.handle(), &__key, &__value, 0); 
+                              if (!dbGeodeticWgs84SenderStamp_open) {
+                                dbGeodeticWgs84SenderStamp = lmdb::dbi::open(txnWgs84, _shortKey.c_str(), MDB_CREATE|MDB_DUPSORT|MDB_DUPFIXED);
+                                dbGeodeticWgs84SenderStamp.set_compare(txnWgs84, &compareMortonKeys);
+                                lmdb::dbi_set_dupsort(txnWgs84, dbGeodeticWgs84SenderStamp.handle(), &compareKeys);
+                                dbGeodeticWgs84SenderStamp_open = true;
+                              }
+
+                              lmdb::dbi_put(txnWgs84, dbGeodeticWgs84SenderStamp.handle(), &__key, &__value, 0); 
                             }
-                            txn.commit();
                           }
                         }
                       }
@@ -321,11 +333,12 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                     _dataType_senderStamp << __storedKey.dataType() << '/' << __storedKey.senderStamp();
                     const std::string _shortKey{_dataType_senderStamp.str()};
 
-                    auto txn = lmdb::txn::begin(envout);
-                    auto dbDataTypeSenderStamp = lmdb::dbi::open(txn, _shortKey.c_str(), MDB_CREATE);
-                    dbDataTypeSenderStamp.set_compare(txn, &compareKeys);
-                    lmdb::dbi_put(txn, dbDataTypeSenderStamp.handle(), &__key, &__value, 0); 
-                    txn.commit();
+                    if (!dbDataTypeSenderStamp_open) {
+                      dbDataTypeSenderStamp = lmdb::dbi::open(txnDTTS, _shortKey.c_str(), MDB_CREATE);
+                      dbDataTypeSenderStamp.set_compare(txnDTTS, &compareKeys);
+                      dbDataTypeSenderStamp_open = true;
+                    }
+                    lmdb::dbi_put(txnDTTS, dbDataTypeSenderStamp.handle(), &__key, &__value, 0); 
                   }
                 }
 
@@ -385,6 +398,10 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
                   }
                 }
                 kept += bufferedKeyValues.size();
+
+                txndbAll.commit();
+                txnWgs84.commit();
+                txnDTTS.commit();
               }
               else {
                 // This trip does not meet the MIN_LEN/MAX_LEN criteria.
