@@ -16,6 +16,7 @@
 #include "httplib.h"
 #include "json.3.12.0.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -79,6 +80,7 @@ int32_t main(int32_t argc, char **argv) {
       svr.Get("/table/:dbname/entries",
       [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
         uint64_t entries{0};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -92,6 +94,45 @@ int32_t main(int32_t argc, char **argv) {
         }
         json j;
         j[dbname]["entries"] = entries;
+        std::string s = j.dump();
+        res.set_content(s, "application/json");
+      });
+
+      svr.Get("/table/:dbname/key/:keyid",
+      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const uint64_t KEYID{static_cast<uint64_t>(std::stoi(req.path_params.at("keyid")))};
+        std::string keyAsJSON{""};
+        try {
+          auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
+          dbi.set_compare(rotxn, &compareKeys);
+          const uint64_t ALL_ENTRIES = dbi.size(rotxn);
+          MDB_val key;
+          MDB_val value;
+          uint64_t entry{0};
+          if (KEYID < ALL_ENTRIES) {
+            // Loop until entry.
+            auto cursor = lmdb::cursor::open(rotxn, dbi);
+            while ((entry++ < KEYID) && 
+                   cursor.get(&key, &value, MDB_NEXT));
+
+            const char *ptr = static_cast<char*>(key.mv_data);
+            cabinet::Key storedKey = getKey(ptr, key.mv_size);
+            cluon::ToJSONVisitor jsonVisitor;
+            storedKey.accept(jsonVisitor);
+            keyAsJSON = jsonVisitor.json();
+          }
+
+          if (VERBOSE) {
+            std::clog << "Retrieving key " << KEYID << " from database '" << dbname << "': " << keyAsJSON << std::endl;
+          }
+        }
+        catch(...) {
+          std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+        }
+        json j;
+        j[dbname]["key"][std::to_string(KEYID)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
         std::string s = j.dump();
         res.set_content(s, "application/json");
       });
