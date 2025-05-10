@@ -247,7 +247,7 @@ int32_t main(int32_t argc, char **argv) {
             MDB_val value;
 
             auto cursor = lmdb::cursor::open(rotxn, dbi);
-            if(cursor.get(&key, &value, MDB_SET_RANGE)) {
+            if (cursor.get(&key, &value, MDB_SET_RANGE)) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (TIMESTAMP == storedKey.timeStamp()) {
@@ -300,6 +300,69 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
       });
 
+      // Response to query for a range of keys between a beginning and end timestamp.
+      svr.Get("/v1/table/:dbname/keys",
+      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        std::string range{"[]"};
+        if (req.has_param("begin") && req.has_param("end")) {
+          json j;
+          try {
+            auto begin = std::stoll(req.get_param_value("begin"));
+            auto end = std::stoll(req.get_param_value("end"));
+            if ( (0 <= begin) && (begin < end) ) {
+              if (VERBOSE) {
+                std::clog << "Return range of key between: " << begin << " and " << end << std::endl;
+              }
+
+              auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
+              dbi.set_compare(rotxn, &compareKeys);
+
+              const uint64_t MAXKEYSIZE = 511;
+              std::vector<char> _key;
+              _key.reserve(MAXKEYSIZE);
+
+              cabinet::Key query;
+              query.timeStamp(begin);
+
+              MDB_val key;
+              key.mv_size = setKey(query, _key.data(), _key.capacity());
+              key.mv_data = _key.data();
+ 
+              MDB_val value;
+              auto cursor = lmdb::cursor::open(rotxn, dbi);
+              if (cursor.get(&key, &value, MDB_SET_RANGE)) {
+                cabinet::Key storedKey;
+                do {
+                  const char *ptr = static_cast<char*>(key.mv_data);
+                  storedKey = getKey(ptr, key.mv_size);
+                  if ( (begin <= storedKey.timeStamp()) &&
+                       (storedKey.timeStamp() < end) ) {
+                    cluon::ToJSONVisitor jsonVisitor;
+                    storedKey.accept(jsonVisitor);
+                    std::string keyAsJSON = jsonVisitor.json();
+                    j.push_back(json::parse(keyAsJSON));
+                  }
+                  else {
+                    break;
+                  }
+                  cursor.get(&key, &value, MDB_NEXT_NODUP);
+                }
+                while ( (begin <= storedKey.timeStamp()) &&
+                        (storedKey.timeStamp() < end) );
+              }
+              cursor.close();
+            }
+          }
+          catch(...) {
+            std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+          }
+          range = j.dump();
+        }
+        res.set_content(range, "application/json");
+      });
+
       // Lambda to call for exporting a key given as timestamp, either as JSONified object or as base64-encoded raw bytes.
       auto retrieveValueByTimeStamp = 
       [&rotxn, VERBOSE, &messageParserResult, &scope](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
@@ -323,7 +386,7 @@ int32_t main(int32_t argc, char **argv) {
             MDB_val value;
 
             auto cursor = lmdb::cursor::open(rotxn, dbi);
-            if(cursor.get(&key, &value, MDB_SET_RANGE)) {
+            if (cursor.get(&key, &value, MDB_SET_RANGE)) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (TIMESTAMP == storedKey.timeStamp()) {
