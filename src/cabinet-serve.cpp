@@ -16,6 +16,7 @@
 #include "httplib.h"
 #include "json.3.12.0.hpp"
 
+#include <unistd.h>
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -30,13 +31,19 @@ int32_t main(int32_t argc, char **argv) {
     std::cerr << "         --cab:     name of the database file" << std::endl;
     std::cerr << "         --mem:     upper memory size for database in memory in GB, default: 64,000 (representing 64TB)" << std::endl;
     std::cerr << "         --port:    http port, default: 8080" << std::endl;
+    std::cerr << "         --unix:    path to set up a UNIX domain socket (any value to --port will be ignored, existing socket fiels will be erased before and after), default: unset" << std::endl;
     std::cerr << "Example: " << argv[0] << " --cab=myStore.cab" << std::endl;
+    std::cerr << "         " << argv[0] << " --cab=myStore.cab --unix=/tmp/cab.sock" << std::endl;
+    std::cerr << std::endl;
+    std::cerr << " Query all tables via HTTP/TCP socket:    curl http://localhost:<PORT>/tables" << std::endl;
+    std::cerr << " Query all tables via UNIX domain socket: curl --no-buffer -XGET --unix-socket <UNIX> http://localhost/tables" << std::endl;
     retCode = 1;
   } else {
     const bool VERBOSE{(commandlineArguments["verbose"].size() != 0)};
     const std::string CABINET{commandlineArguments["cab"]};
     const uint64_t MEM{(commandlineArguments["mem"].size() != 0) ? static_cast<uint64_t>(std::stoi(commandlineArguments["mem"])) : 64UL*1024UL};
     const uint64_t PORT{(commandlineArguments["port"].size() != 0) ? static_cast<uint64_t>(std::stoi(commandlineArguments["port"])) : 8080};
+    const std::string UNIX{commandlineArguments["unix"]};
 
     using json = nlohmann::json;
 
@@ -169,13 +176,13 @@ int32_t main(int32_t argc, char **argv) {
             if(cursor.get(&key, &value, MDB_SET_RANGE)) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
-              if (VERBOSE) {
-                std::clog << "Retrieving key for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
-              }
               if (TIMESTAMP == storedKey.timeStamp()) {
                 cluon::ToJSONVisitor jsonVisitor;
                 storedKey.accept(jsonVisitor);
                 keyAsJSON = jsonVisitor.json();
+                if (VERBOSE) {
+                  std::clog << "Retrieving key for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
+                }
               }
             }
           }
@@ -189,7 +196,14 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
       });
 
-      svr.listen("0.0.0.0", PORT);
+      if (UNIX.size() == 0) {
+        svr.listen("0.0.0.0", PORT);
+      }
+      else {
+        ::unlink(UNIX.c_str());
+        svr.set_address_family(AF_UNIX).listen(UNIX, 80);
+        ::unlink(UNIX.c_str());
+      }
       //auto dbi = lmdb::dbi::open(rotxn, DB.c_str());
       //dbi.set_compare(rotxn, &compareKeys);
       //const uint64_t totalEntries = dbi.size(rotxn);
