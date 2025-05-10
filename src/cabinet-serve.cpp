@@ -76,6 +76,26 @@ int32_t main(int32_t argc, char **argv) {
         }
       );
 
+      svr.Get("/table/:dbname/entries",
+      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        uint64_t entries{0};
+        try {
+          auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
+          entries = dbi.size(rotxn);
+          if (VERBOSE) {
+            std::clog << "Found " << entries << " entries in database '" << dbname << "'." << std::endl;
+          }
+        }
+        catch(...) {
+          std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+        }
+        json j;
+        j[dbname]["entries"] = entries;
+        std::string s = j.dump();
+        res.set_content(s, "application/json");
+      });
+
       svr.listen("0.0.0.0", PORT);
       //auto dbi = lmdb::dbi::open(rotxn, DB.c_str());
       //dbi.set_compare(rotxn, &compareKeys);
