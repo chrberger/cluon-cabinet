@@ -56,12 +56,8 @@ int32_t main(int32_t argc, char **argv) {
       env.set_max_dbs(100);
       env.open(CABINET.c_str(), MDB_RDONLY|MDB_NOSUBDIR, 0600);
 
-      // Fetch key/value pairs in a read-only transaction.
+      // Interact with the lmdb tables in a read-only transaction.
       auto rotxn = lmdb::txn::begin(env, nullptr, MDB_RDONLY);
-
-      //auto dbiAll = lmdb::dbi::open(rotxn, "all");
-      //dbiAll.set_compare(rotxn, &compareKeys);
-      //std::clog << "Found " << dbiAll.size(rotxn) << " entries in database 'all'." << std::endl;
 
       // Response to list all tables.
       svr.Get("/tables",
@@ -107,31 +103,34 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
       });
 
-      // Response to get a particular key in ascending order.
-      svr.Get("/table/:dbname/keyentry/:keyentryid",
-      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
-        auto dbname = req.path_params.at("dbname");
-        std::replace(dbname.begin(), dbname.end(), '_', '/');
-        const uint64_t KEYENTRYID{static_cast<uint64_t>(std::stoll(req.path_params.at("keyentryid")))};
+      // Lambda to call for exporting a key, either as JSONified object or as base64-encoded raw bytes.
+      auto retrieveKeyEntryByID = 
+      [&rotxn, VERBOSE](const std::string &dbname, const uint64_t KEYENTRYID, const bool &AS_RAW) {
         std::string keyAsJSON{""};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
           dbi.set_compare(rotxn, &compareKeys);
           const uint64_t ALL_ENTRIES = dbi.size(rotxn);
-          MDB_val key;
-          MDB_val value;
-          uint64_t entry{0};
           if (KEYENTRYID < ALL_ENTRIES) {
+            MDB_val key;
+            MDB_val value;
             // Loop until entry.
+            uint64_t entry{0};
             auto cursor = lmdb::cursor::open(rotxn, dbi);
             while ((entry++ < KEYENTRYID) && 
                    cursor.get(&key, &value, MDB_NEXT));
 
             const char *ptr = static_cast<char*>(key.mv_data);
-            cabinet::Key storedKey = getKey(ptr, key.mv_size);
-            cluon::ToJSONVisitor jsonVisitor;
-            storedKey.accept(jsonVisitor);
-            keyAsJSON = jsonVisitor.json();
+            if (AS_RAW) {
+              const std::string DATA(reinterpret_cast<const char *>(ptr), key.mv_size);
+              keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
+            }
+            else {
+              cabinet::Key storedKey = getKey(ptr, key.mv_size);
+              cluon::ToJSONVisitor jsonVisitor;
+              storedKey.accept(jsonVisitor);
+              keyAsJSON = jsonVisitor.json();
+            }
           }
 
           if (VERBOSE) {
@@ -144,15 +143,33 @@ int32_t main(int32_t argc, char **argv) {
         json j;
         j[dbname]["keyentry"][std::to_string(KEYENTRYID)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
         std::string s = j.dump();
-        res.set_content(s, "application/json");
-      });
+        return s;
+      };
 
-      // Response to query for a particular key using the key's timestamp.
-      svr.Get("/table/:dbname/key/:timestamp",
-      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+      // Response to get a particular key in ascending order and return the key in base64-encoded raw bytes.
+      svr.Get("/table/:dbname/keyentry/:keyentryid/raw",
+      [&retrieveKeyEntryByID](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
-        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        const uint64_t KEYENTRYID{static_cast<uint64_t>(std::stoll(req.path_params.at("keyentryid")))};
+        const bool AS_RAW{true};
+        std::string s = retrieveKeyEntryByID(dbname, KEYENTRYID, AS_RAW);
+        res.set_content(s, "application/json");
+       });
+
+      // Response to get a particular key in ascending order.
+      svr.Get("/table/:dbname/keyentry/:keyentryid",
+      [&retrieveKeyEntryByID](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const uint64_t KEYENTRYID{static_cast<uint64_t>(std::stoll(req.path_params.at("keyentryid")))};
+        const bool AS_RAW{false};
+        std::string s = retrieveKeyEntryByID(dbname, KEYENTRYID, AS_RAW);
+        res.set_content(s, "application/json");
+       });
+
+      auto retrieveKeyEntryByTimeStamp = 
+      [&rotxn, VERBOSE](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
         std::string keyAsJSON{""};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -177,9 +194,16 @@ int32_t main(int32_t argc, char **argv) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (TIMESTAMP == storedKey.timeStamp()) {
-                cluon::ToJSONVisitor jsonVisitor;
-                storedKey.accept(jsonVisitor);
-                keyAsJSON = jsonVisitor.json();
+                if (AS_RAW) {
+                  const std::string DATA(reinterpret_cast<const char *>(ptr), key.mv_size);
+                  keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
+                }
+                else {
+                  cluon::ToJSONVisitor jsonVisitor;
+                  storedKey.accept(jsonVisitor);
+                  keyAsJSON = jsonVisitor.json();
+                }
+ 
                 if (VERBOSE) {
                   std::clog << "Retrieving key for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
                 }
@@ -193,6 +217,28 @@ int32_t main(int32_t argc, char **argv) {
         json j;
         j[dbname]["key"][std::to_string(TIMESTAMP)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
         std::string s = j.dump();
+        return s;
+      };
+
+      // Response to query for a particular key using the key's timestamp.
+      svr.Get("/table/:dbname/key/:timestamp/raw",
+      [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        const bool AS_RAW{true};
+        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        res.set_content(s, "application/json");
+      });
+
+      // Response to query for a particular key using the key's timestamp.
+      svr.Get("/table/:dbname/key/:timestamp",
+      [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        const bool AS_RAW{false};
+        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW);
         res.set_content(s, "application/json");
       });
 
