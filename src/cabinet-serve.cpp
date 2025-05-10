@@ -56,6 +56,7 @@ int32_t main(int32_t argc, char **argv) {
       //dbiAll.set_compare(rotxn, &compareKeys);
       //std::clog << "Found " << dbiAll.size(rotxn) << " entries in database 'all'." << std::endl;
 
+      // Response to list all tables.
       svr.Get("/tables",
         [&rotxn, VERBOSE](const httplib::Request &, httplib::Response &res) {
           auto dbilist = lmdb::dbi::open(rotxn);
@@ -77,6 +78,7 @@ int32_t main(int32_t argc, char **argv) {
         }
       );
 
+      // Response to query the number of entries in a table.
       svr.Get("/table/:dbname/entries",
       [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
@@ -98,11 +100,12 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
       });
 
-      svr.Get("/table/:dbname/key/:keyid",
+      // Response to get a particular key in ascending order.
+      svr.Get("/table/:dbname/keyentry/:keyentryid",
       [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
-        const uint64_t KEYID{static_cast<uint64_t>(std::stoi(req.path_params.at("keyid")))};
+        const uint64_t KEYENTRYID{static_cast<uint64_t>(std::stoll(req.path_params.at("keyentryid")))};
         std::string keyAsJSON{""};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -111,10 +114,10 @@ int32_t main(int32_t argc, char **argv) {
           MDB_val key;
           MDB_val value;
           uint64_t entry{0};
-          if (KEYID < ALL_ENTRIES) {
+          if (KEYENTRYID < ALL_ENTRIES) {
             // Loop until entry.
             auto cursor = lmdb::cursor::open(rotxn, dbi);
-            while ((entry++ < KEYID) && 
+            while ((entry++ < KEYENTRYID) && 
                    cursor.get(&key, &value, MDB_NEXT));
 
             const char *ptr = static_cast<char*>(key.mv_data);
@@ -125,14 +128,63 @@ int32_t main(int32_t argc, char **argv) {
           }
 
           if (VERBOSE) {
-            std::clog << "Retrieving key " << KEYID << " from database '" << dbname << "': " << keyAsJSON << std::endl;
+            std::clog << "Retrieving key " << KEYENTRYID << " from database '" << dbname << "': " << keyAsJSON << std::endl;
           }
         }
         catch(...) {
           std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
         }
         json j;
-        j[dbname]["key"][std::to_string(KEYID)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        j[dbname]["keyentry"][std::to_string(KEYENTRYID)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        std::string s = j.dump();
+        res.set_content(s, "application/json");
+      });
+
+      // Response to query for a particular key using the key's timestamp.
+      svr.Get("/table/:dbname/key/:timestamp",
+      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        std::string keyAsJSON{""};
+        try {
+          auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
+          dbi.set_compare(rotxn, &compareKeys);
+
+          if (TIMESTAMP > 0) {
+            const uint64_t MAXKEYSIZE = 511;
+            std::vector<char> _key;
+            _key.reserve(MAXKEYSIZE);
+
+            cabinet::Key query;
+            query.timeStamp(TIMESTAMP);
+            
+            MDB_val key;
+            key.mv_size = setKey(query, _key.data(), _key.capacity());
+            key.mv_data = _key.data();
+
+            MDB_val value;
+
+            auto cursor = lmdb::cursor::open(rotxn, dbi);
+            if(cursor.get(&key, &value, MDB_SET_RANGE)) {
+              const char *ptr = static_cast<char*>(key.mv_data);
+              cabinet::Key storedKey = getKey(ptr, key.mv_size);
+              if (VERBOSE) {
+                std::clog << "Retrieving key for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
+              }
+              if (TIMESTAMP == storedKey.timeStamp()) {
+                cluon::ToJSONVisitor jsonVisitor;
+                storedKey.accept(jsonVisitor);
+                keyAsJSON = jsonVisitor.json();
+              }
+            }
+          }
+        }
+        catch(...) {
+          std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+        }
+        json j;
+        j[dbname]["key"][std::to_string(TIMESTAMP)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
         std::string s = j.dump();
         res.set_content(s, "application/json");
       });
