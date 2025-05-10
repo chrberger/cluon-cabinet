@@ -342,9 +342,6 @@ int32_t main(int32_t argc, char **argv) {
                   keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
                 }
                 else {
-                 // cluon::ToJSONVisitor jsonVisitor;
-                 // storedKey.accept(jsonVisitor);
-                 // keyAsJSON = jsonVisitor.json();
                   std::stringstream sstr{std::string(val.data(), storedKey.length())};
                   auto e = cluon::extractEnvelope(sstr);
                   if (e.first) {
