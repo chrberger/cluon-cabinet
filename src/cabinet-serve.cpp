@@ -166,7 +166,7 @@ int32_t main(int32_t argc, char **argv) {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
           dbi.set_compare(rotxn, &compareKeys);
           const uint64_t ALL_ENTRIES = dbi.size(rotxn);
-          if (KEYENTRYID < ALL_ENTRIES) {
+          if (KEYENTRYID <= ALL_ENTRIES) {
             MDB_val key;
             MDB_val value;
             // Loop until entry.
@@ -327,54 +327,66 @@ int32_t main(int32_t argc, char **argv) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (TIMESTAMP == storedKey.timeStamp()) {
-                std::vector<char> val;
-                val.reserve(storedKey.length());
-                if (storedKey.length() > value.mv_size) {
-                  LZ4_decompress_safe(static_cast<char*>(value.mv_data), val.data(), value.mv_size, val.capacity());
+                if ("trips" == dbname) {
+                  std::clog << "read from trips" << std::endl;
+
+                  const char *ptrValue = static_cast<char*>(value.mv_data);
+                  cabinet::Key storedKeyValue = getKey(ptrValue, value.mv_size);
+
+                  cluon::ToJSONVisitor jsonVisitor;
+                  storedKeyValue.accept(jsonVisitor);
+                  keyAsJSON = jsonVisitor.json();
                 }
                 else {
-                  // Stored value is uncompressed.
-                  memcpy(val.data(), static_cast<char*>(value.mv_data), value.mv_size);
-                }
+                  std::vector<char> val;
+                  val.reserve(storedKey.length());
+                  if (storedKey.length() > value.mv_size) {
+                    LZ4_decompress_safe(static_cast<char*>(value.mv_data), val.data(), value.mv_size, val.capacity());
+                  }
+                  else {
+                    // Stored value is uncompressed.
+                    memcpy(val.data(), static_cast<char*>(value.mv_data), value.mv_size);
+                  }
 
-                if (AS_RAW) {
-                  const std::string DATA(reinterpret_cast<const char *>(val.data()), storedKey.length());
-                  keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
-                }
-                else {
-                  std::stringstream sstr{std::string(val.data(), storedKey.length())};
-                  auto e = cluon::extractEnvelope(sstr);
-                  if (e.first) {
-                    cluon::data::Envelope env{std::move(e.second)};
-                    if (scope.count(env.dataType()) > 0) {
-                      cluon::FromProtoVisitor protoDecoder;
-                      std::stringstream _sstr(env.serializedData());
-                      protoDecoder.decodeFrom(_sstr);
+                  if (AS_RAW) {
+                    const std::string DATA(reinterpret_cast<const char *>(val.data()), storedKey.length());
+                    keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
+                  }
+                  else {
+                    std::stringstream sstr{std::string(val.data(), storedKey.length())};
+                    auto e = cluon::extractEnvelope(sstr);
+                    if (e.first) {
+                      cluon::data::Envelope env{std::move(e.second)};
+                      if (scope.count(env.dataType()) > 0) {
+                        cluon::FromProtoVisitor protoDecoder;
+                        std::stringstream _sstr(env.serializedData());
+                        protoDecoder.decodeFrom(_sstr);
 
-                      cluon::MetaMessage m = scope[env.dataType()];
-                      cluon::GenericMessage gm;
-                      gm.createFrom(m, messageParserResult.first);
-                      gm.accept(protoDecoder);
-              
-                      cluon::ToJSONVisitor jsonVisitor;
-                      gm.accept(jsonVisitor);
-                      keyAsJSON = jsonVisitor.json();
+                        cluon::MetaMessage m = scope[env.dataType()];
+                        cluon::GenericMessage gm;
+                        gm.createFrom(m, messageParserResult.first);
+                        gm.accept(protoDecoder);
+                
+                        cluon::ToJSONVisitor jsonVisitor;
+                        gm.accept(jsonVisitor);
+                        keyAsJSON = jsonVisitor.json();
 
-                      json j;
-                      j = {
-                        { "dataType", env.dataType() },
-                        { "senderStamp", env.senderStamp() },
-                        { "sent", cluon::time::toMicroseconds(env.sent()) },
-                        { "received", cluon::time::toMicroseconds(env.sent()) },
-                        { "sampleTimeStamp", cluon::time::toMicroseconds(env.sampleTimeStamp()) },
-                        { "typeName", m.packageName() + m.messageName() },
-                        { "message", json::parse(keyAsJSON) }
-                      };
-                      keyAsJSON = j.dump();
+                        json j;
+                        j = {
+                          { "dataType", env.dataType() },
+                          { "senderStamp", env.senderStamp() },
+                          { "sent", cluon::time::toMicroseconds(env.sent()) },
+                          { "received", cluon::time::toMicroseconds(env.sent()) },
+                          { "sampleTimeStamp", cluon::time::toMicroseconds(env.sampleTimeStamp()) },
+                          { "typeName", m.packageName() + m.messageName() },
+                          { "message", json::parse(keyAsJSON) }
+                        };
+                        keyAsJSON = j.dump();
+                      }
                     }
                   }
                 }
- 
+   
                 if (VERBOSE) {
                   std::clog << "Retrieving value for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
                 }
