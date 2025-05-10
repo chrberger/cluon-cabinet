@@ -328,8 +328,6 @@ int32_t main(int32_t argc, char **argv) {
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (TIMESTAMP == storedKey.timeStamp()) {
                 if ("trips" == dbname) {
-                  std::clog << "read from trips" << std::endl;
-
                   const char *ptrValue = static_cast<char*>(value.mv_data);
                   cabinet::Key storedKeyValue = getKey(ptrValue, value.mv_size);
 
