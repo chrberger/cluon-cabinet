@@ -153,7 +153,7 @@ int32_t main(int32_t argc, char **argv) {
           std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
         }
         json j;
-        j[dbname]["entries"] = entries;
+        j["rows"] = entries;
         std::string s = j.dump();
         res.set_content(s, "application/json");
       });
@@ -197,7 +197,7 @@ int32_t main(int32_t argc, char **argv) {
           std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
         }
         json j;
-        j[dbname]["keyentry"][std::to_string(KEYENTRYID)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        j = json::parse(keyAsJSON.size() == 0 ? "{}" : keyAsJSON);
         std::string s = j.dump();
         return s;
       };
@@ -273,7 +273,7 @@ int32_t main(int32_t argc, char **argv) {
           std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
         }
         json j;
-        j[dbname]["key"][std::to_string(TIMESTAMP)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        j = json::parse(keyAsJSON.size() == 0 ? "{}" : keyAsJSON);
         std::string s = j.dump();
         return s;
       };
@@ -387,7 +387,7 @@ int32_t main(int32_t argc, char **argv) {
           std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
         }
         json j;
-        j[dbname]["value"][std::to_string(TIMESTAMP)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        j = json::parse(keyAsJSON.size() == 0 ? "{}" : keyAsJSON);
         std::string s = j.dump();
         return s;
       };
