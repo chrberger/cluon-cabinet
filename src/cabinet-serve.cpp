@@ -57,6 +57,10 @@ API calls (examples are shown for curl accessing the UNIX domain socket):
 
 8. Get the value for the key with timestamp t in table "all" as raw, base64-encoded export; the timestamp is given in UNIX Epoch in nanoseconds by using the .odvd message specification to resolve the content:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000/raw
+
+9. Get a list of keys between a start and end timepoint:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock "http://localhost/v1/table/19_0/keys?begin=1738053266290204000&end=1738056448089609000"
+
  */
 int32_t main(int32_t argc, char **argv) {
   int32_t retCode{0};
@@ -417,13 +421,13 @@ int32_t main(int32_t argc, char **argv) {
                     std::stringstream sstr{std::string(val.data(), storedKey.length())};
                     auto e = cluon::extractEnvelope(sstr);
                     if (e.first) {
-                      cluon::data::Envelope env{std::move(e.second)};
-                      if (scope.count(env.dataType()) > 0) {
+                      cluon::data::Envelope _env{std::move(e.second)};
+                      if (scope.count(_env.dataType()) > 0) {
                         cluon::FromProtoVisitor protoDecoder;
-                        std::stringstream _sstr(env.serializedData());
+                        std::stringstream _sstr(_env.serializedData());
                         protoDecoder.decodeFrom(_sstr);
 
-                        cluon::MetaMessage m = scope[env.dataType()];
+                        cluon::MetaMessage m = scope[_env.dataType()];
                         cluon::GenericMessage gm;
                         gm.createFrom(m, messageParserResult.first);
                         gm.accept(protoDecoder);
@@ -434,11 +438,11 @@ int32_t main(int32_t argc, char **argv) {
 
                         json j;
                         j = {
-                          { "dataType", env.dataType() },
-                          { "senderStamp", env.senderStamp() },
-                          { "sent", cluon::time::toMicroseconds(env.sent()) },
-                          { "received", cluon::time::toMicroseconds(env.sent()) },
-                          { "sampleTimeStamp", cluon::time::toMicroseconds(env.sampleTimeStamp()) },
+                          { "dataType", _env.dataType() },
+                          { "senderStamp", _env.senderStamp() },
+                          { "sent", cluon::time::toMicroseconds(_env.sent()) },
+                          { "received", cluon::time::toMicroseconds(_env.sent()) },
+                          { "sampleTimeStamp", cluon::time::toMicroseconds(_env.sampleTimeStamp()) },
                           { "typeName", m.packageName() + m.messageName() },
                           { "message", json::parse(keyAsJSON) }
                         };
