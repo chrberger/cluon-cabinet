@@ -361,7 +361,7 @@ int32_t main(int32_t argc, char **argv) {
                       keyAsJSON = jsonVisitor.json();
 
                       json j;
-                      j["envelope"] = {
+                      j = {
                         { "dataType", env.dataType() },
                         { "senderStamp", env.senderStamp() },
                         { "sent", cluon::time::toMicroseconds(env.sent()) },
