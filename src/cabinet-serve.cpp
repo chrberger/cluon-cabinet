@@ -22,6 +22,42 @@
 #include <sstream>
 #include <string>
 
+/**
+This application encapsulates the access to a cabinet database in lmdb format and exposes the access via REST interface.
+The data can be accessed either via HTTP requests to a TCP socket, or via a UNIX domain sockets.
+
+Starting the server with HTTP/TCP access at port 8085:
+    cabinet-serve --cab=database.cab --port=8085 --verbose --odvd=messages.odvd
+
+Starting the server with UNIX domain socket access:
+    cabinet-serve --cab=database.cab --port=8085 --verbose --unix=/tmp/cab.sock --odvd=messages.odvd
+
+API calls (examples are shown for curl accessing the UNIX domain socket):
+
+1. Get a list of all tables:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/tables
+
+2. Get the number of rows in table "all":
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/entries
+
+3. Get the first key in table "all" (note that entry 0 is empty):
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/keyentry/1
+
+4. Get the first key in table "all" (note that entry 0 is empty) as raw, base64-encoded export:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/keyentry/1/raw
+
+5. Get the key for timestamp t in table "all"; the timestamp is given in UNIX Epoch in nanoseconds:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000
+
+6. Get the key for timestamp t in table "all" as raw, base64-encoded export; the timestamp is given in UNIX Epoch in nanoseconds:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000/raw
+
+7. Get the value for the key with timestamp t in table "all"; the timestamp is given in UNIX Epoch in nanoseconds by using the .odvd message specification to resolve the content:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000
+
+8. Get the value for the key with timestamp t in table "all" as raw, base64-encoded export; the timestamp is given in UNIX Epoch in nanoseconds by using the .odvd message specification to resolve the content:
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000/raw
+ */
 int32_t main(int32_t argc, char **argv) {
   int32_t retCode{0};
   auto commandlineArguments = cluon::getCommandlineArguments(argc, argv);
@@ -45,6 +81,24 @@ int32_t main(int32_t argc, char **argv) {
     const uint64_t PORT{(commandlineArguments["port"].size() != 0) ? static_cast<uint64_t>(std::stoi(commandlineArguments["port"])) : 8080};
     const std::string UNIX{commandlineArguments["unix"]};
 
+    cluon::MessageParser mp;
+    std::pair<std::vector<cluon::MetaMessage>, cluon::MessageParser::MessageParserErrorCodes> messageParserResult;
+    {
+      std::ifstream fin(commandlineArguments["odvd"], std::ios::in|std::ios::binary);
+      if (fin.good()) {
+        std::string input(static_cast<std::stringstream const&>(std::stringstream() << fin.rdbuf()).str()); // NOLINT
+        fin.close();
+        messageParserResult = mp.parse(input);
+        std::clog << "Found " << messageParserResult.first.size() << " messages." << std::endl;
+      }
+      else {
+        std::cerr << argv[0] << ": Message specification '" << commandlineArguments["odvd"] << "' not found." << std::endl;
+        return retCode = 1;
+      }
+    }
+    std::map<int32_t, cluon::MetaMessage> scope;
+    for (const auto &e : messageParserResult.first) { scope[e.messageIdentifier()] = e; }
+
     using json = nlohmann::json;
 
     httplib::Server svr;
@@ -60,7 +114,7 @@ int32_t main(int32_t argc, char **argv) {
       auto rotxn = lmdb::txn::begin(env, nullptr, MDB_RDONLY);
 
       // Response to list all tables.
-      svr.Get("/tables",
+      svr.Get("/v1/tables",
         [&rotxn, VERBOSE](const httplib::Request &, httplib::Response &res) {
           auto dbilist = lmdb::dbi::open(rotxn);
           auto cursor = lmdb::cursor::open(rotxn, dbilist);
@@ -78,11 +132,12 @@ int32_t main(int32_t argc, char **argv) {
           }
           s = j.dump();
           res.set_content(s, "application/json");
+          cursor.close();
         }
       );
 
       // Response to query the number of entries in a table.
-      svr.Get("/table/:dbname/entries",
+      svr.Get("/v1/table/:dbname/entries",
       [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
@@ -131,6 +186,7 @@ int32_t main(int32_t argc, char **argv) {
               storedKey.accept(jsonVisitor);
               keyAsJSON = jsonVisitor.json();
             }
+            cursor.close();
           }
 
           if (VERBOSE) {
@@ -147,7 +203,7 @@ int32_t main(int32_t argc, char **argv) {
       };
 
       // Response to get a particular key in ascending order and return the key in base64-encoded raw bytes.
-      svr.Get("/table/:dbname/keyentry/:keyentryid/raw",
+      svr.Get("/v1/table/:dbname/keyentry/:keyentryid/raw",
       [&retrieveKeyEntryByID](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
@@ -158,7 +214,7 @@ int32_t main(int32_t argc, char **argv) {
        });
 
       // Response to get a particular key in ascending order.
-      svr.Get("/table/:dbname/keyentry/:keyentryid",
+      svr.Get("/v1/table/:dbname/keyentry/:keyentryid",
       [&retrieveKeyEntryByID](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
@@ -168,6 +224,7 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
        });
 
+      // Lambda to call for exporting a key given as timestamp, either as JSONified object or as base64-encoded raw bytes.
       auto retrieveKeyEntryByTimeStamp = 
       [&rotxn, VERBOSE](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
         std::string keyAsJSON{""};
@@ -209,6 +266,7 @@ int32_t main(int32_t argc, char **argv) {
                 }
               }
             }
+            cursor.close();
           }
         }
         catch(...) {
@@ -220,8 +278,8 @@ int32_t main(int32_t argc, char **argv) {
         return s;
       };
 
-      // Response to query for a particular key using the key's timestamp.
-      svr.Get("/table/:dbname/key/:timestamp/raw",
+      // Response to query for a particular key using the key's timestamp and to return the result as raw, base64-encoded bytes.
+      svr.Get("/v1/table/:dbname/key/:timestamp/raw",
       [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
@@ -232,7 +290,7 @@ int32_t main(int32_t argc, char **argv) {
       });
 
       // Response to query for a particular key using the key's timestamp.
-      svr.Get("/table/:dbname/key/:timestamp",
+      svr.Get("/v1/table/:dbname/key/:timestamp",
       [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
@@ -242,6 +300,128 @@ int32_t main(int32_t argc, char **argv) {
         res.set_content(s, "application/json");
       });
 
+      // Lambda to call for exporting a key given as timestamp, either as JSONified object or as base64-encoded raw bytes.
+      auto retrieveValueByTimeStamp = 
+      [&rotxn, VERBOSE, &messageParserResult, &scope](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
+        std::string keyAsJSON{""};
+        try {
+          auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
+          dbi.set_compare(rotxn, &compareKeys);
+
+          if (TIMESTAMP > 0) {
+            const uint64_t MAXKEYSIZE = 511;
+            std::vector<char> _key;
+            _key.reserve(MAXKEYSIZE);
+
+            cabinet::Key query;
+            query.timeStamp(TIMESTAMP);
+            
+            MDB_val key;
+            key.mv_size = setKey(query, _key.data(), _key.capacity());
+            key.mv_data = _key.data();
+
+            MDB_val value;
+
+            auto cursor = lmdb::cursor::open(rotxn, dbi);
+            if(cursor.get(&key, &value, MDB_SET_RANGE)) {
+              const char *ptr = static_cast<char*>(key.mv_data);
+              cabinet::Key storedKey = getKey(ptr, key.mv_size);
+              if (TIMESTAMP == storedKey.timeStamp()) {
+                std::vector<char> val;
+                val.reserve(storedKey.length());
+                if (storedKey.length() > value.mv_size) {
+                  LZ4_decompress_safe(static_cast<char*>(value.mv_data), val.data(), value.mv_size, val.capacity());
+                }
+                else {
+                  // Stored value is uncompressed.
+                  memcpy(val.data(), static_cast<char*>(value.mv_data), value.mv_size);
+                }
+
+                if (AS_RAW) {
+                  const std::string DATA(reinterpret_cast<const char *>(val.data()), storedKey.length());
+                  keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
+                }
+                else {
+                 // cluon::ToJSONVisitor jsonVisitor;
+                 // storedKey.accept(jsonVisitor);
+                 // keyAsJSON = jsonVisitor.json();
+                  std::stringstream sstr{std::string(val.data(), storedKey.length())};
+                  auto e = cluon::extractEnvelope(sstr);
+                  if (e.first) {
+                    cluon::data::Envelope env{std::move(e.second)};
+                    if (scope.count(env.dataType()) > 0) {
+                      cluon::FromProtoVisitor protoDecoder;
+                      std::stringstream _sstr(env.serializedData());
+                      protoDecoder.decodeFrom(_sstr);
+
+                      cluon::MetaMessage m = scope[env.dataType()];
+                      cluon::GenericMessage gm;
+                      gm.createFrom(m, messageParserResult.first);
+                      gm.accept(protoDecoder);
+              
+                      cluon::ToJSONVisitor jsonVisitor;
+                      gm.accept(jsonVisitor);
+                      keyAsJSON = jsonVisitor.json();
+
+                      json j;
+                      j["envelope"] = {
+                        { "dataType", env.dataType() },
+                        { "senderStamp", env.senderStamp() },
+                        { "sent", cluon::time::toMicroseconds(env.sent()) },
+                        { "received", cluon::time::toMicroseconds(env.sent()) },
+                        { "sampleTimeStamp", cluon::time::toMicroseconds(env.sampleTimeStamp()) },
+                        { "typeName", m.packageName() + m.messageName() },
+                        { "message", json::parse(keyAsJSON) }
+                      };
+                      keyAsJSON = j.dump();
+                    }
+                  }
+                }
+ 
+                if (VERBOSE) {
+                  std::clog << "Retrieving value for timestamp " << TIMESTAMP << " from database '" << dbname << "': " << keyAsJSON << std::endl;
+                }
+              }
+            }
+            cursor.close();
+          }
+        }
+        catch(...) {
+          std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+        }
+        json j;
+        j[dbname]["value"][std::to_string(TIMESTAMP)] = json::parse(keyAsJSON.size() == 0 ? "None" : keyAsJSON);
+        std::string s = j.dump();
+        return s;
+      };
+
+      // Response to query for a particular key using the key's timestamp and to return the result as raw, base64-encoded bytes.
+      svr.Get("/v1/table/:dbname/value/:timestamp/raw",
+      [&retrieveValueByTimeStamp](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        const bool AS_RAW{true};
+        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        res.set_content(s, "application/json");
+      });
+
+      // Response to query for a particular key using the key's timestamp.
+      svr.Get("/v1/table/:dbname/value/:timestamp",
+      [&retrieveValueByTimeStamp](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        if (dbname != "all") {
+          std::cerr << "Warning! Retrieving values for tables other than all may not work." << std::endl;
+        }
+        const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
+        const bool AS_RAW{false};
+        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        res.set_content(s, "application/json");
+      });
+
+
+      // Start listening.
       if (UNIX.size() == 0) {
         svr.listen("0.0.0.0", PORT);
       }
@@ -250,64 +430,7 @@ int32_t main(int32_t argc, char **argv) {
         svr.set_address_family(AF_UNIX).listen(UNIX, 80);
         ::unlink(UNIX.c_str());
       }
-      //auto dbi = lmdb::dbi::open(rotxn, DB.c_str());
-      //dbi.set_compare(rotxn, &compareKeys);
-      //const uint64_t totalEntries = dbi.size(rotxn);
-      //std::clog << "Found " << totalEntries << " entries in database '" << DB << "'." << std::endl;
-/*
-      auto cursor = lmdb::cursor::open(rotxn, dbi);
 
-      MDB_val key;
-      MDB_val value;
-      int32_t oldPercentage{-1};
-      uint64_t entries{0};
-      while (cursor.get(&key, &value, MDB_NEXT)) {
-        entries++;
-
-        MDB_val keyAll = key;
-        MDB_val valueAll = value;
-
-        // if we dump another table than "all", we need to look up the actual values from the original "all" table first.
-        if (DB != "all") {
-          keyAll = key;
-
-          if (!lmdb::dbi_get(rotxn, dbiAll, &keyAll, &valueAll)) {
-            continue;
-          }
-        }
-
-        const char *ptr = static_cast<char*>(keyAll.mv_data);
-        cabinet::Key storedKey = getKey(ptr, keyAll.mv_size);
-
-        std::vector<char> val;
-        val.reserve(storedKey.length());
-        if (storedKey.length() > valueAll.mv_size) {
-          LZ4_decompress_safe(static_cast<char*>(valueAll.mv_data), val.data(), valueAll.mv_size, val.capacity());
-        }
-        else {
-          // Stored value is uncompressed.
-          memcpy(val.data(), static_cast<char*>(valueAll.mv_data), valueAll.mv_size);
-        }
-        std::cout.write(static_cast<char*>(val.data()), storedKey.length());
-
-   
-        // Extract an Envelope and its payload on the example for AccelerationReading
-        std::stringstream sstr{std::string(val.data(), storedKey.length())};
-        auto e = cluon::extractEnvelope(sstr);
-        if (e.first && e.second.dataType() == opendlv::proxy::AccelerationReading::ID()) {
-          const auto tmp = cluon::extractMessage<opendlv::proxy::AccelerationReading>(std::move(e.second));
-          std::cerr << tmp.accelerationX() << ", " << tmp.accelerationY() << std::endl;
-        }
-  
-
-        const int32_t percentage = static_cast<int32_t>((static_cast<float>(entries) * 100.0f) / static_cast<float>(totalEntries));
-        if ((percentage % 5 == 0) && (percentage != oldPercentage)) {
-          std::clog <<"Processed " << percentage << "% (" << entries << " entries) from " << CABINET << std::endl;
-          oldPercentage = percentage;
-        }
-      }
-      cursor.close();
-*/
       rotxn.abort();
     }
     catch (...) {
