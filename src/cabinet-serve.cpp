@@ -342,7 +342,7 @@ int32_t main(int32_t argc, char **argv) {
                   const char *ptr = static_cast<char*>(key.mv_data);
                   storedKey = getKey(ptr, key.mv_size);
                   if ( (begin <= storedKey.timeStamp()) &&
-                       (storedKey.timeStamp() < end) ) {
+                       (storedKey.timeStamp() <= end) ) {
                     cluon::ToJSONVisitor jsonVisitor;
                     storedKey.accept(jsonVisitor);
                     std::string keyAsJSON = jsonVisitor.json();
@@ -354,7 +354,7 @@ int32_t main(int32_t argc, char **argv) {
                   cursor.get(&key, &value, MDB_NEXT_NODUP);
                 }
                 while ( (begin <= storedKey.timeStamp()) &&
-                        (storedKey.timeStamp() < end) );
+                        (storedKey.timeStamp() <= end) );
               }
               cursor.close();
             }
@@ -486,7 +486,7 @@ int32_t main(int32_t argc, char **argv) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
         if (dbname != "all") {
-          std::cerr << "Warning! Retrieving values for tables other than all may not work." << std::endl;
+          std::cerr << "Warning! Retrieving values for tables other than 'all' may not work." << std::endl;
         }
         const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
         const bool AS_RAW{false};
