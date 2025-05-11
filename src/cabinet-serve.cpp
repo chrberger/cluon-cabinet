@@ -48,20 +48,36 @@ API calls (examples are shown for curl accessing the UNIX domain socket):
 
 5. Get the key for timestamp t in table "all"; the timestamp is given in UNIX Epoch in nanoseconds:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000
+  
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000?match=exact
+  The optional parameter match set to "exact" requires that the given timestamp must match.
+
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000?match=exactOrClosestThatFollows
+  The optional parameter match set to "exactOrClosestThatFollows" accepts that the given timestamp can match or returns the closest next key that follows the timestamp.
 
 6. Get the key for timestamp t in table "all" as raw, base64-encoded export; the timestamp is given in UNIX Epoch in nanoseconds:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/key/1680168559268570000/raw
 
+  This call also accepts the optional parameter match that can be either "exact" or "exactOrClosestThatFollows".
+
 7. Get the value for the key with timestamp t in table "all"; the timestamp is given in UNIX Epoch in nanoseconds by using the .odvd message specification to resolve the content:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000
+
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000?match=exact
+  The optional parameter match set to "exact" requires that the given timestamp must match.
+
+  curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000?match=exactOrClosestThatFollows
+  The optional parameter match set to "exactOrClosestThatFollows" accepts that the given timestamp can match or returns the closest next value that follows the timestamp.
 
 8. Get the value for the key with timestamp t in table "all" as raw, base64-encoded export; the timestamp is given in UNIX Epoch in nanoseconds by using the .odvd message specification to resolve the content:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock http://localhost/v1/table/all/value/1680168559268570000/raw
 
+  This call also accepts the optional parameter match that can be either "exact" or "exactOrClosestThatFollows".
+
 9. Get a list of keys between a start and end timepoint:
   curl --no-buffer -XGET --unix-socket /tmp/cab.sock "http://localhost/v1/table/19_0/keys?begin=1738053266290204000&end=1738056448089609000"
+*/
 
- */
 int32_t main(int32_t argc, char **argv) {
   int32_t retCode{0};
   auto commandlineArguments = cluon::getCommandlineArguments(argc, argv);
@@ -229,8 +245,12 @@ int32_t main(int32_t argc, char **argv) {
        });
 
       // Lambda to call for exporting a key given as timestamp, either as JSONified object or as base64-encoded raw bytes.
+      enum TimeStampMatch {
+        EXACT = 0,
+        EXACT_OR_CLOSEST_THAT_FOLLOWS = 1
+      };
       auto retrieveKeyEntryByTimeStamp = 
-      [&rotxn, VERBOSE](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
+      [&rotxn, VERBOSE](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW, const TimeStampMatch &m) {
         std::string keyAsJSON{""};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -254,7 +274,8 @@ int32_t main(int32_t argc, char **argv) {
             if (cursor.get(&key, &value, MDB_SET_RANGE)) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
-              if (TIMESTAMP == storedKey.timeStamp()) {
+              if (   ( (m == TimeStampMatch::EXACT) && (TIMESTAMP == storedKey.timeStamp()) )
+                  || (m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) ) {
                 if (AS_RAW) {
                   const std::string DATA(reinterpret_cast<const char *>(ptr), key.mv_size);
                   keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
@@ -287,9 +308,23 @@ int32_t main(int32_t argc, char **argv) {
       [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
+
+        TimeStampMatch m = TimeStampMatch::EXACT;
+        if (req.has_param("match")) {
+          std::string match = req.get_param_value("match");
+          std::transform(match.begin(), match.end(), match.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+          if (match == "exact") {
+            m = TimeStampMatch::EXACT;
+          }
+          else if (match == "exactorclosestthatfollows") {
+            m = TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS;
+          }
+        }
+
         const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
         const bool AS_RAW{true};
-        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW, m);
         res.set_content(s, "application/json");
       });
 
@@ -298,9 +333,23 @@ int32_t main(int32_t argc, char **argv) {
       [&retrieveKeyEntryByTimeStamp](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
+
+        TimeStampMatch m = TimeStampMatch::EXACT;
+        if (req.has_param("match")) {
+          std::string match = req.get_param_value("match");
+          std::transform(match.begin(), match.end(), match.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+          if (match == "exact") {
+            m = TimeStampMatch::EXACT;
+          }
+          else if (match == "exactorclosestthatfollows") {
+            m = TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS;
+          }
+        }
+
         const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
         const bool AS_RAW{false};
-        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        std::string s = retrieveKeyEntryByTimeStamp(dbname, TIMESTAMP, AS_RAW, m);
         res.set_content(s, "application/json");
       });
 
@@ -369,7 +418,7 @@ int32_t main(int32_t argc, char **argv) {
 
       // Lambda to call for exporting a key given as timestamp, either as JSONified object or as base64-encoded raw bytes.
       auto retrieveValueByTimeStamp = 
-      [&rotxn, VERBOSE, &messageParserResult, &scope](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW) {
+      [&rotxn, VERBOSE, &messageParserResult, &scope](const std::string &dbname, const int64_t TIMESTAMP, const bool &AS_RAW, const TimeStampMatch &_m) {
         std::string keyAsJSON{""};
         try {
           auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -393,7 +442,8 @@ int32_t main(int32_t argc, char **argv) {
             if (cursor.get(&key, &value, MDB_SET_RANGE)) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
-              if (TIMESTAMP == storedKey.timeStamp()) {
+              if (   ( (_m == TimeStampMatch::EXACT) && (TIMESTAMP == storedKey.timeStamp()) )
+                  || (_m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) ) {
                 if ("trips" == dbname) {
                   const char *ptrValue = static_cast<char*>(value.mv_data);
                   cabinet::Key storedKeyValue = getKey(ptrValue, value.mv_size);
@@ -474,9 +524,23 @@ int32_t main(int32_t argc, char **argv) {
       [&retrieveValueByTimeStamp](const httplib::Request &req, httplib::Response &res) {
         auto dbname = req.path_params.at("dbname");
         std::replace(dbname.begin(), dbname.end(), '_', '/');
+
+        TimeStampMatch m = TimeStampMatch::EXACT;
+        if (req.has_param("match")) {
+          std::string match = req.get_param_value("match");
+          std::transform(match.begin(), match.end(), match.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+          if (match == "exact") {
+            m = TimeStampMatch::EXACT;
+          }
+          else if (match == "exactorclosestthatfollows") {
+            m = TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS;
+          }
+        }
+
         const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
         const bool AS_RAW{true};
-        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW, m);
         res.set_content(s, "application/json");
       });
 
@@ -488,9 +552,23 @@ int32_t main(int32_t argc, char **argv) {
         if (dbname != "all") {
           std::cerr << "Warning! Retrieving values for tables other than 'all' may not work." << std::endl;
         }
+
+        TimeStampMatch m = TimeStampMatch::EXACT;
+        if (req.has_param("match")) {
+          std::string match = req.get_param_value("match");
+          std::transform(match.begin(), match.end(), match.begin(),
+            [](unsigned char c){ return std::tolower(c); });
+          if (match == "exact") {
+            m = TimeStampMatch::EXACT;
+          }
+          else if (match == "exactorclosestthatfollows") {
+            m = TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS;
+          }
+        }
+
         const int64_t TIMESTAMP{static_cast<int64_t>(std::stoll(req.path_params.at("timestamp")))};
         const bool AS_RAW{false};
-        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW);
+        std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW, m);
         res.set_content(s, "application/json");
       });
 
