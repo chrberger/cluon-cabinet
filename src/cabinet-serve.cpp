@@ -587,7 +587,7 @@ int32_t main(int32_t argc, char **argv) {
                && req.has_param("top-right-lat")
                && req.has_param("top-right-lon")
              ) {
-            json j;
+            json j = json::array();
             try {
               float blLat = std::stof(req.get_param_value("bottom-left-lat"));
               float blLon = std::stof(req.get_param_value("bottom-left-lon"));
@@ -620,6 +620,9 @@ int32_t main(int32_t argc, char **argv) {
                 if (cursor.get(&key, &value, MDB_SET_RANGE)) {
                   std::vector<int64_t> listOfTimeStamps;
                   uint64_t morton{0};
+                  // Retrieve key/value for current cursor position.
+                  bool rc = cursor.get(&key, &value, MDB_FIRST_DUP);
+                  std::cerr << "rc = " << rc << std::endl;
                   do {
                     int64_t timeStamp{0};
                     if (value.mv_size == sizeof(int64_t)) {
@@ -632,10 +635,10 @@ int32_t main(int32_t argc, char **argv) {
                     morton = *reinterpret_cast<uint64_t*>(key.mv_data);
                     morton = be64toh(morton);
 
+                    auto decodedLatLon = convertMortonToLatLon(morton);
                     if (VERBOSE) {
-                      std::cerr << "M(BL): " << mortonBL << ", M(TR): " << mortonTR << ", M(curr): " << morton << ", t: " << timeStamp << std::endl;
+                      std::cerr << "M(BL): " << mortonBL << ", M(curr): " << morton << ", lat: " << decodedLatLon.first << ", " << decodedLatLon.second << ", M(TR): " << mortonTR << ", t: " << timeStamp << std::endl;
                     }
-
                     if ( (mortonBL <= morton) &&
                          (morton <= mortonTR) ) {
                       listOfTimeStamps.push_back(timeStamp);
@@ -643,12 +646,22 @@ int32_t main(int32_t argc, char **argv) {
                     else {
                       break;
                     }
-                    cursor.get(&key, &value, MDB_NEXT);
+                    rc = cursor.get(&key, &value, MDB_NEXT_DUP);
+                    if (0 == rc) {
+                      // Current key exhausted, move to next key.
+                      rc = cursor.get(&key, &value, MDB_NEXT_NODUP);
+                      std::cerr << "nodup, rc = " << rc << std::endl;
+                    }
+                    std::cerr << "rc = " << rc << std::endl;
                   }
-                  while ( (mortonBL <= morton) &&
+                  while ( (1 == rc) &&
+                          (mortonBL <= morton) &&
                           (morton <= mortonTR) );
                   // If we found timestamps within the given geofence, return the list of timestamps.
                   if (listOfTimeStamps.size() != 0) {
+                    // Remove duplicates.
+                    sort(listOfTimeStamps.begin(), listOfTimeStamps.end());
+                    listOfTimeStamps.erase(unique(listOfTimeStamps.begin(), listOfTimeStamps.end()), listOfTimeStamps.end());
                     j = json(listOfTimeStamps);
                   }
                 }
