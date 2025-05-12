@@ -294,7 +294,7 @@ inline bool cabinet_WGS84toTrips(const uint64_t &MEM, const std::string &CABINET
 
                               // value is the nanosecond timestamp in network byte order of the entry from table 'all'
                               MDB_val __value;
-                              int64_t _timeStamp = storedKey.timeStamp();
+                              int64_t _timeStamp = _storedKey.timeStamp();
                               _timeStamp = htobe64(_timeStamp);
                               __value.mv_size = sizeof(_timeStamp);
                               __value.mv_data = &_timeStamp;
