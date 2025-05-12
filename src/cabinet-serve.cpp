@@ -275,7 +275,8 @@ int32_t main(int32_t argc, char **argv) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (   ( (m == TimeStampMatch::EXACT) && (TIMESTAMP == storedKey.timeStamp()) )
-                  || (m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) ) {
+                  ||   (m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) 
+                 ) {
                 if (AS_RAW) {
                   const std::string DATA(reinterpret_cast<const char *>(ptr), key.mv_size);
                   keyAsJSON = "{\"raw_as_base64\":\"" + cluon::ToJSONVisitor::encodeBase64(DATA) + "\"}";
@@ -366,7 +367,7 @@ int32_t main(int32_t argc, char **argv) {
             auto end = std::stoll(req.get_param_value("end"));
             if ( (0 <= begin) && (begin < end) ) {
               if (VERBOSE) {
-                std::clog << "Return range of key between: " << begin << " and " << end << std::endl;
+                std::clog << "Return range of keys between: " << begin << " and " << end << std::endl;
               }
 
               auto dbi = lmdb::dbi::open(rotxn, dbname.c_str());
@@ -443,7 +444,8 @@ int32_t main(int32_t argc, char **argv) {
               const char *ptr = static_cast<char*>(key.mv_data);
               cabinet::Key storedKey = getKey(ptr, key.mv_size);
               if (   ( (_m == TimeStampMatch::EXACT) && (TIMESTAMP == storedKey.timeStamp()) )
-                  || (_m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) ) {
+                  ||   (_m == TimeStampMatch::EXACT_OR_CLOSEST_THAT_FOLLOWS) 
+                 ) {
                 if ("trips" == dbname) {
                   const char *ptrValue = static_cast<char*>(value.mv_data);
                   cabinet::Key storedKeyValue = getKey(ptrValue, value.mv_size);
@@ -570,6 +572,96 @@ int32_t main(int32_t argc, char **argv) {
         const bool AS_RAW{false};
         std::string s = retrieveValueByTimeStamp(dbname, TIMESTAMP, AS_RAW, m);
         res.set_content(s, "application/json");
+      });
+
+      // Response to query for a range of timestamps within a geofence area.
+      // Requires a Morton table of GPS coordinates, ie., 19/0-morton, 19/1-morton, ...
+      svr.Get("/v1/morton/:dbname/keys",
+      [&rotxn, VERBOSE](const httplib::Request &req, httplib::Response &res) {
+        auto dbname = req.path_params.at("dbname");
+        std::replace(dbname.begin(), dbname.end(), '_', '/');
+        std::string range{"[]"};
+        if (dbname.find("-morton") != std::string::npos) {
+          if (    req.has_param("bottom-left-lat")
+               && req.has_param("bottom-left-lon")
+               && req.has_param("top-right-lat")
+               && req.has_param("top-right-lon")
+             ) {
+            json j;
+            try {
+              float blLat = std::stof(req.get_param_value("bottom-left-lat"));
+              float blLon = std::stof(req.get_param_value("bottom-left-lon"));
+              float trLat = std::stof(req.get_param_value("top-right-lat"));
+              float trLon = std::stof(req.get_param_value("top-right-lon"));
+              if (    (blLat < trLat)
+                   && (blLon < trLon) ) {
+                if (VERBOSE) {
+                  std::clog << "Return range of keys between: (" << blLat << ", " << blLon << ") and (" << trLat << ", " << trLon << ")." << std::endl;
+                }
+
+                auto dbi = lmdb::dbi::open(rotxn, dbname.c_str(), MDB_DUPSORT|MDB_DUPFIXED);
+                // The keys in a Morton-ized database are compared not by time encoded from the key but numerically.
+                dbi.set_compare(rotxn, &compareMortonKeys);
+                // The values, though, are sorted as the regular keys for cabinet::Key.
+                lmdb::dbi_set_dupsort(rotxn, dbi.handle(), &compareKeys);
+
+                // Position cursor at bottom/left coordinate.
+                auto mortonBL = convertLatLonToMorton(std::make_pair(blLat, blLon));
+                auto mortonTR = convertLatLonToMorton(std::make_pair(trLat, trLon));
+
+                MDB_val key;
+                key.mv_size = sizeof(mortonBL);
+                auto _tmp = htobe64(mortonBL);
+                key.mv_data = &_tmp;
+
+                // Value contains the nanoseconds timestamp in network byte order.
+                MDB_val value;
+                auto cursor = lmdb::cursor::open(rotxn, dbi);
+                if (cursor.get(&key, &value, MDB_SET_RANGE)) {
+                  std::vector<int64_t> listOfTimeStamps;
+                  uint64_t morton{0};
+                  do {
+                    int64_t timeStamp{0};
+                    if (value.mv_size == sizeof(int64_t)) {
+                      const char *ptr = static_cast<char*>(value.mv_data);
+                      std::memcpy(&timeStamp, ptr, value.mv_size);
+                      timeStamp = be64toh(timeStamp);
+                    }
+
+                    // Read current Morton value and check whether it is within geofence.
+                    morton = *reinterpret_cast<uint64_t*>(key.mv_data);
+                    morton = be64toh(morton);
+
+                    if (VERBOSE) {
+                      std::cerr << "M(BL): " << mortonBL << ", M(TR): " << mortonTR << ", M(curr): " << morton << ", t: " << timeStamp << std::endl;
+                    }
+
+                    if ( (mortonBL <= morton) &&
+                         (morton <= mortonTR) ) {
+                      listOfTimeStamps.push_back(timeStamp);
+                    }
+                    else {
+                      break;
+                    }
+                    cursor.get(&key, &value, MDB_NEXT);
+                  }
+                  while ( (mortonBL <= morton) &&
+                          (morton <= mortonTR) );
+                  // If we found timestamps within the given geofence, return the list of timestamps.
+                  if (listOfTimeStamps.size() != 0) {
+                    j = json(listOfTimeStamps);
+                  }
+                }
+                cursor.close();
+              }
+            }
+            catch(...) {
+              std::cerr << "Failed to open database '" << dbname << "'." << std::endl;
+            }
+            range = j.dump();
+          }
+        }
+        res.set_content(range, "application/json");
       });
 
 
